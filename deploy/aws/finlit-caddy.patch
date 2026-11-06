@@ -1,0 +1,25 @@
+diff --git a/finlit-platform/deploy/aws/Caddyfile b/finlit-platform/deploy/aws/Caddyfile
+index 1b42d79..113ee44 100644
+--- a/finlit-platform/deploy/aws/Caddyfile
++++ b/finlit-platform/deploy/aws/Caddyfile
+@@ -33,3 +33,8 @@
+ 		header_up X-Real-IP {remote_host}
+ 	}
+ }
++
++# Extra sites on this server, one file each in /opt/finlit/caddy-extra/ (e.g. the team task workspace:
++# https://github.com/pranshukesavmishra/workspace, whose install.sh writes workspace.caddy there).
++# With no files in that folder this line only logs a warning and changes nothing.
++import /etc/caddy/extra/*.caddy
+diff --git a/finlit-platform/deploy/aws/docker-compose.aws.yml b/finlit-platform/deploy/aws/docker-compose.aws.yml
+index f50f857..1062c75 100644
+--- a/finlit-platform/deploy/aws/docker-compose.aws.yml
++++ b/finlit-platform/deploy/aws/docker-compose.aws.yml
+@@ -131,6 +131,7 @@ services:
+       - "443:443"
+     volumes:
+       - ./Caddyfile:/etc/caddy/Caddyfile:ro
++      - ${CADDY_EXTRA_DIR:-/opt/finlit/caddy-extra}:/etc/caddy/extra:ro   # extra sites (see the end of the Caddyfile); empty = nothing changes
+       - caddy_data:/data             # certificates: keep this volume, or Let's Encrypt limits are hit again
+       - caddy_config:/config
+     depends_on: [app]
