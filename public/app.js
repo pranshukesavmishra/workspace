@@ -424,12 +424,13 @@ function wireComposer(root) {
   const files = [];
   const maxBytes = S.config.maxUploadMb * 1024 * 1024;
 
-  function addFiles(list) {
-    for (const f of list) {
+  async function addFiles(list) {
+    for (const raw of [...list]) {
+      const f = await shrinkImage(raw);
       if (f.size > maxBytes) { toast(`${f.name} is larger than ${S.config.maxUploadMb} MB`, 'error'); continue; }
       files.push(f);
+      drawChips();
     }
-    drawChips();
   }
   function drawChips() {
     chips.innerHTML = '';
@@ -464,6 +465,28 @@ function wireComposer(root) {
     get busy() { return voice.busy; },
     clear() { ta.value = ''; files.length = 0; drawChips(); },
   };
+}
+
+// Screenshots are often 1–5 MB PNGs. Scale to max 1920px and re-encode (WebP, or JPEG where
+// WebP encoding isn't supported): typically 5–10x smaller and text stays readable. GIFs and small files are left alone.
+async function shrinkImage(file) {
+  if (!/^image\/(png|jpeg|webp|bmp)$/.test(file.type) || file.size < 250 * 1024) return file;
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 1920 / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bmp.width * scale);
+    canvas.height = Math.round(bmp.height * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); // JPEG has no transparency
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    bmp.close?.();
+    let blob = await new Promise((r) => canvas.toBlob(r, 'image/webp', 0.85));
+    if (!blob || blob.type !== 'image/webp') blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.85));
+    if (!blob || blob.size >= file.size) return file;
+    const ext = blob.type === 'image/webp' ? 'webp' : 'jpg';
+    return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.' + ext, { type: blob.type });
+  } catch { return file; }
 }
 
 // Voice: record audio + live browser speech-to-text; if the server has Whisper,
@@ -811,6 +834,7 @@ function openTeamModal() {
     <div class="modal-body">
       <p class="muted" style="margin:0">The <b>lead</b> picks up tasks and marks them done; everyone else verifies. ${isLead() ? '' : 'Only a lead can change roles.'}</p>
       <div id="team-list"></div>
+      <p class="muted" id="storage" style="margin:0;font-size:13px"></p>
       <form class="inline-form" id="add-member"><input class="input" name="name" placeholder="Add a teammate's name" maxlength="40" required><button class="btn">Add</button></form>
     </div>`, { size: 'sm' });
   const draw = () => {
@@ -820,6 +844,9 @@ function openTeamModal() {
       ${m.id !== S.me.id ? `<button class="btn sm danger" data-remove="${m.id}">Remove</button>` : ''}` : ''}</div>`).join('');
   };
   draw();
+  api('/api/stats').then((s) => {
+    $('#storage', modal).textContent = `Storage used: ${fmtSize(s.bytes)} · ${s.images} screenshots/photos, ${s.audio} voice notes, ${s.files} other files · ${s.tasks} tasks`;
+  }).catch(() => {});
   modal.addEventListener('click', async (e) => {
     const r = e.target.closest('[data-role]'); const d = e.target.closest('[data-remove]');
     try {

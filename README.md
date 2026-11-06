@@ -45,26 +45,42 @@ TEAM_PASSCODE=choose-something npm start
 
 Open http://localhost:3000. The **first person to join becomes the lead**. Everyone else opens the same link, enters the passcode once, and adds their name. Roles can be changed later under your name → **Manage team**.
 
-### Host it for the team
+### Host it for the team: on the Finlit AWS server (recommended)
 
-The app is a single Node server. It stores its database and uploads in `DATA_DIR`, which **must be on persistent storage**.
+The workspace runs as **one extra small container on the same EC2 server as Finlit** (about 60 MB of memory). That means no new hosting account and no subscription. Files stay on the server's disk.
 
-- **Railway / Render / Fly.io:** deploy this repo and attach a volume/disk mounted at `/data`. Set `DATA_DIR=/data`, `TEAM_PASSCODE`, and optionally `WHISPER_API_KEY`. (Free tiers without a disk lose data on restart.)
-- **Any VPS / office machine with Docker:**
-  ```bash
-  cp .env.example .env
-  ```
-  Edit `.env`, then:
-  ```bash
-  docker compose up -d --build
-  ```
-  Put it behind https (e.g. Caddy, or a Cloudflare Tunnel) so the mic works on phones.
+- Finlit's Caddy (already on ports 80/443) serves it over **https** at its own address, e.g. `https://workspace.finlitventures.com`. Without a domain it uses a free `workspace.<server-ip>.sslip.io` address.
+- Finlit itself is untouched apart from a two-line, one-time change in its repository: Caddy loads extra site files from `/opt/finlit/caddy-extra/`. With no files there it does nothing.
+- After install, the server checks this repo every 5 minutes and redeploys on its own when `main` changes (same idea as Finlit's auto-deploy).
 
-**Backups:** copy the `data/` folder (`workspace.db*` and `uploads/`).
+**One-time install**, after the Finlit change is deployed. On the server, as `ubuntu`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pranshukesavmishra/workspace/main/deploy/aws/install.sh | WORKSPACE_DOMAIN=workspace.finlitventures.com bash
+```
+
+For a custom domain, first add a DNS **A record** `workspace` → the server's Elastic IP. Without `WORKSPACE_DOMAIN`, the free sslip.io address is used. The script prints the link and the team passcode, which you can change in `/opt/workspace/.env` (then rerun the script).
+
+Useful commands on the server:
+
+```bash
+bash /opt/workspace/src/deploy/aws/update.sh logs
+```
+
+```bash
+docker restart finlit-workspace
+```
+
+**Storage & backups.** Everything is in `/opt/workspace/data`: `workspace.db` (tasks) and `uploads/` (screenshots, voice notes, files). A snapshot of the database is saved every day in `data/backups/`, and the last 30 days are kept. Screenshots are shrunk in the browser before upload (max 1920 px, WebP), typically 200–400 KB each. So 5 people adding ~5 screenshots a day comes to roughly 2–3 GB a year. **Manage team** shows the storage used. For copies off the server, add an S3 bucket in `.env` (`S3_*`, see `.env.example`). Files and the database are then also stored there, which costs a few cents per GB per month on AWS.
+
+### Other ways to run it
+
+- **Any server with Docker:** `cp .env.example .env`, edit it, then `docker compose up -d --build`. Put it behind https so the mic works.
+- **Hosts without a permanent disk** (e.g. free Render): set the `S3_*` variables. Files and the database then live in the bucket, and the database is restored on every start.
 
 ## Configuration
 
-See [`.env.example`](.env.example): `APP_NAME`, `PORT`, `TEAM_PASSCODE`, `DATA_DIR`, `MAX_UPLOAD_MB`, `WHISPER_API_KEY`, `WHISPER_BASE_URL`, `WHISPER_MODEL`.
+See [`.env.example`](.env.example): `APP_NAME`, `PORT`, `TEAM_PASSCODE`, `DATA_DIR`, `MAX_UPLOAD_MB`, `WHISPER_*` (voice-to-text) and `S3_*` (optional cloud storage).
 
 ## Notes
 
@@ -76,7 +92,9 @@ See [`.env.example`](.env.example): `APP_NAME`, `PORT`, `TEAM_PASSCODE`, `DATA_D
 ## Project layout
 
 ```
-server.js        Express API: tasks, status workflow, uploads, Whisper proxy, passcode
+server.js        Express API: tasks, status workflow, uploads, Whisper proxy, passcode, backups
+storage.js       Optional S3-compatible bucket (files + database copies)
+deploy/aws/      Install + auto-update on the Finlit EC2 server
 db.js            SQLite schema (node:sqlite)
 public/          Front end (plain HTML/CSS/JS, no build step)
   app.js         UI: board, by-date view, task panel, voice recorder, copy

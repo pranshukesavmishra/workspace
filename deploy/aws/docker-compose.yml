@@ -1,0 +1,33 @@
+# The workspace as one extra container on the Finlit AWS server.
+# It joins Finlit's Docker network so Finlit's Caddy (the only thing on ports 80/443) can send https traffic to it.
+# Normally started by install.sh / update.sh, from /opt/workspace/src:
+#   ENV_FILE=/opt/workspace/.env docker compose -f deploy/aws/docker-compose.yml up -d --build
+name: finlit-workspace
+
+services:
+  workspace:
+    build: ../..
+    image: finlit-workspace:current
+    container_name: finlit-workspace        # Caddy reaches it as finlit-workspace:3000
+    env_file: ${ENV_FILE:-/opt/workspace/.env}
+    environment:
+      DATA_DIR: /data
+      PORT: "3000"
+      TZ: Asia/Kolkata
+    volumes:
+      - ${WORKSPACE_DATA_DIR:-/opt/workspace/data}:/data   # database + screenshots/voice notes (on the server's disk)
+    expose: ["3000"]                        # nothing published: only reachable through Caddy
+    networks: [finlit]
+    mem_limit: 192m                          # normal use is ~60 MB; the server has 2 GB shared with Finlit
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+networks:
+  finlit:
+    external: true
+    name: finlit_default                     # created by Finlit's compose project ("finlit")

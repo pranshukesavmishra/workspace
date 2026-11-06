@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
+import { createStorage } from './storage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -22,7 +23,16 @@ const WHISPER_PROMPT = process.env.WHISPER_PROMPT ||
   'Team task update for a software project. May mix Hindi and English (Hinglish).';
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-const db = openDb(path.join(DATA_DIR, 'workspace.db'));
+const remote = createStorage(process.env);
+const DB_FILE = path.join(DATA_DIR, 'workspace.db');
+if (remote && !fs.existsSync(DB_FILE)) {
+  // Fresh container (free hosts wipe the disk on restart): bring the database back from the bucket.
+  // If the bucket can't be reached we stop here instead of starting empty and overwriting the real copy.
+  const saved = await remote.get('db/workspace.db');
+  if (saved) { fs.writeFileSync(DB_FILE, saved); console.log(`Restored database from ${remote.describe} (${saved.length} bytes)`); }
+  else console.log(`No saved database in ${remote.describe} yet: starting fresh`);
+}
+const db = openDb(DB_FILE);
 
 const TYPES = ['bug', 'update', 'feature', 'other'];
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
@@ -50,7 +60,49 @@ function tx(fn) {
   try { const r = fn(); db.exec('COMMIT'); return r; }
   catch (e) { db.exec('ROLLBACK'); throw e; }
 }
-const bump = () => db.prepare("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'version'").run();
+const bump = () => { db.prepare("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'version'").run(); scheduleBackup(); };
+
+// ---------- database backups ----------
+// A few seconds after every change: a consistent snapshot of the database. One copy per day is kept in
+// DATA_DIR/backups (last 30 days). With a bucket configured, the latest copy and the daily copies also go there.
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const KEEP_DAILY = 30;
+let backupTimer = null;
+let backupChain = Promise.resolve();
+let lastDaily = '';
+function scheduleBackup() {
+  clearTimeout(backupTimer);
+  backupTimer = setTimeout(() => { backupTimer = null; runBackup(); }, 3000);
+}
+function runBackup() {
+  backupChain = backupChain.then(async () => {
+    const tmp = path.join(DATA_DIR, `snapshot-${process.pid}.db`);
+    fs.rmSync(tmp, { force: true });
+    db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`); // consistent copy, safe while the app runs
+    try {
+      const day = todayLocal();
+      if (day !== lastDaily) {
+        fs.mkdirSync(BACKUP_DIR, { recursive: true });
+        fs.copyFileSync(tmp, path.join(BACKUP_DIR, `${day}.db`));
+        const old = fs.readdirSync(BACKUP_DIR).filter((f) => /^\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort().slice(0, -KEEP_DAILY);
+        old.forEach((f) => fs.rmSync(path.join(BACKUP_DIR, f), { force: true }));
+      }
+      if (remote) {
+        const buf = fs.readFileSync(tmp);
+        await remote.put('db/workspace.db', buf, 'application/vnd.sqlite3');
+        if (day !== lastDaily) await remote.put(`db/daily/${day}.db`, buf, 'application/vnd.sqlite3');
+      }
+      lastDaily = day;
+    } finally { fs.rmSync(tmp, { force: true }); }
+  }).catch((e) => console.error('Database backup failed (will retry on the next change):', e.message));
+  return backupChain;
+}
+async function shutdown(signal) {
+  if (backupTimer) { clearTimeout(backupTimer); console.log(`${signal}: saving database before exit…`); await runBackup(); }
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 const getVersion = () => Number(db.prepare("SELECT value FROM meta WHERE key = 'version'").get().value);
 
 // ---------- uploads ----------
@@ -87,6 +139,11 @@ function saveAttachments(files = [], taskId, updateId, memberId) {
   }
 }
 const discardFiles = (files = []) => files.forEach((f) => f.path && fs.unlink(f.path, () => {}));
+// With cloud storage, copy each upload to the bucket before it is recorded (the local copy stays as a cache).
+async function persistUploads(files = []) {
+  if (!remote || !files.length) return;
+  await Promise.all(files.map(async (f) => remote.put('uploads/' + f.filename, await fs.promises.readFile(f.path), (f.mimetype || '').split(';')[0] || 'application/octet-stream')));
+}
 
 // ---------- auth (optional shared team passcode) ----------
 const AUTH_TOKEN = PASSCODE ? crypto.createHash('sha256').update('workspace:' + PASSCODE).digest('hex') : '';
@@ -145,6 +202,8 @@ app.disable('x-powered-by');
 app.set('trust proxy', true);
 app.use(express.json({ limit: '1mb' }));
 
+app.get('/api/ping', (req, res) => res.json({ ok: true })); // health check / keep-awake ping (no passcode, no data)
+
 app.get('/api/config', (req, res) => {
   res.json({ appName: APP_NAME, needsPasscode: !!PASSCODE, authed: isAuthed(req), whisper: !!WHISPER_KEY, maxUploadMb: MAX_UPLOAD_MB });
 });
@@ -160,15 +219,20 @@ app.post('/api/login', (req, res) => {
 app.use(['/api', '/uploads'], (req, res, next) => (isAuthed(req) ? next() : res.status(401).json({ error: 'Passcode required' })));
 
 const RISKY = /\.(html?|xhtml|svg|xml|js|mjs)$/i;
-app.use('/uploads', express.static(UPLOAD_DIR, {
-  index: false,
-  maxAge: '30d',
-  setHeaders: (res, file) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Security-Policy', 'sandbox');
-    if (RISKY.test(file)) res.setHeader('Content-Disposition', 'attachment');
-  },
-}));
+app.get('/uploads/:name', async (req, res) => {
+  const name = req.params.name;
+  if (!/^[a-f0-9]{24}(\.[a-z0-9]{1,9})?$/.test(name)) throw new HttpError(404, 'Not found');
+  const file = path.join(UPLOAD_DIR, name);
+  if (!fs.existsSync(file)) {
+    const buf = remote ? await remote.get('uploads/' + name) : null; // fresh container: fetch from the bucket once
+    if (!buf) throw new HttpError(404, 'Not found');
+    await fs.promises.writeFile(file, buf);
+  }
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', 'sandbox');
+  if (RISKY.test(name)) res.setHeader('Content-Disposition', 'attachment');
+  res.sendFile(file, { maxAge: '30d' });
+});
 
 // --- members ---
 app.get('/api/members', (req, res) => {
@@ -222,7 +286,16 @@ app.patch('/api/members/:id', (req, res) => {
 });
 
 // --- tasks ---
-app.get('/api/version', (req, res) => res.json({ version: getVersion() }));
+app.get('/api/stats', (req, res) => {
+  const k = Object.fromEntries(db.prepare('SELECT kind, COUNT(*) AS n FROM attachments GROUP BY kind').all().map((r) => [r.kind, r.n]));
+  res.json({
+    bytes: db.prepare('SELECT COALESCE(SUM(size), 0) AS b FROM attachments').get().b,
+    images: k.image || 0, audio: k.audio || 0, files: (k.file || 0) + (k.video || 0),
+    tasks: db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE deleted = 0').get().n,
+  });
+});
+
+app.get('/api/version',(req, res) => res.json({ version: getVersion() }));
 
 app.get('/api/tasks', (req, res) => res.json({ version: getVersion(), tasks: loadTasks() }));
 
@@ -251,10 +324,11 @@ function taskFields(body, { partial }) {
   return out;
 }
 
-app.post('/api/tasks', upload.array('files', 20), (req, res) => {
+app.post('/api/tasks', upload.array('files', 20), async (req, res) => {
   try {
     const me = actor(req);
     const f = taskFields(req.body || {}, { partial: false });
+    await persistUploads(req.files);
     const ts = now();
     const id = tx(() => {
       const r = db.prepare(`INSERT INTO tasks (title, description, type, priority, area, links, status, task_date, created_by, created_at, updated_at)
@@ -271,12 +345,13 @@ app.post('/api/tasks', upload.array('files', 20), (req, res) => {
   } catch (e) { discardFiles(req.files); throw e; }
 });
 
-app.patch('/api/tasks/:id', upload.array('files', 20), (req, res) => {
+app.patch('/api/tasks/:id', upload.array('files', 20), async (req, res) => {
   try {
     const me = actor(req);
     const t = getTask(req.params.id);
     if (t.created_by !== me.id && me.role !== 'lead') throw new HttpError(403, 'Only the person who added it (or the lead) can edit this task');
     const f = taskFields(req.body || {}, { partial: true });
+    await persistUploads(req.files);
     tx(() => {
       const keys = Object.keys(f);
       if (keys.length) {
@@ -299,7 +374,7 @@ app.delete('/api/tasks/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/tasks/:id/status', upload.array('files', 20), (req, res) => {
+app.post('/api/tasks/:id/status', upload.array('files', 20), async (req, res) => {
   try {
     const me = actor(req);
     const t = getTask(req.params.id);
@@ -311,6 +386,7 @@ app.post('/api/tasks/:id/status', upload.array('files', 20), (req, res) => {
       const others = db.prepare('SELECT COUNT(*) AS n FROM members WHERE active = 1 AND id != ?').get(me.id).n;
       if (others) throw new HttpError(403, 'Someone else from the team has to verify work you marked as done');
     }
+    await persistUploads(req.files);
     const ts = now();
     tx(() => {
       const sets = { status: to, updated_at: ts };
@@ -328,12 +404,13 @@ app.post('/api/tasks/:id/status', upload.array('files', 20), (req, res) => {
   } catch (e) { discardFiles(req.files); throw e; }
 });
 
-app.post('/api/tasks/:id/updates', upload.array('files', 20), (req, res) => {
+app.post('/api/tasks/:id/updates', upload.array('files', 20), async (req, res) => {
   try {
     const me = actor(req);
     const t = getTask(req.params.id);
     const body = String(req.body?.body || '').trim().slice(0, 20000);
     if (!body && !req.files?.length) throw new HttpError(400, 'Write, speak or attach something first');
+    await persistUploads(req.files);
     const ts = now();
     tx(() => {
       const r = db.prepare("INSERT INTO updates (task_id, author, kind, body, created_at) VALUES (?, ?, 'comment', ?, ?)").run(t.id, me.id, body, ts);
@@ -352,6 +429,7 @@ app.delete('/api/attachments/:id', (req, res) => {
   if (a.uploaded_by !== me.id && me.role !== 'lead') throw new HttpError(403, 'Only the uploader (or the lead) can remove this');
   db.prepare('DELETE FROM attachments WHERE id = ?').run(a.id);
   fs.unlink(path.join(UPLOAD_DIR, a.stored_name), () => {});
+  remote?.del('uploads/' + a.stored_name).catch((e) => console.error(e.message));
   bump();
   res.json({ ok: true });
 });
@@ -395,5 +473,6 @@ app.listen(PORT, () => {
   console.log(`${APP_NAME} running on http://localhost:${PORT}`);
   console.log(`  data:     ${DATA_DIR}`);
   console.log(`  passcode: ${PASSCODE ? 'on' : 'off (set TEAM_PASSCODE to protect it)'}`);
+  console.log(`  storage:  ${remote ? remote.describe + ' (files + database backups)' : 'local disk only'}`);
   console.log(`  whisper:  ${WHISPER_KEY ? `${WHISPER_MODEL} via ${WHISPER_BASE}` : 'off (browser speech recognition only)'}`);
 });
