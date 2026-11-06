@@ -10,6 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------- configuration (all optional, see .env.example) ----------
 const PORT = Number(process.env.PORT || 3000);
+const APP_NAME = (process.env.APP_NAME || 'Finlit Workspace').slice(0, 60);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const PASSCODE = process.env.TEAM_PASSCODE || '';
@@ -145,7 +146,7 @@ app.set('trust proxy', true);
 app.use(express.json({ limit: '1mb' }));
 
 app.get('/api/config', (req, res) => {
-  res.json({ needsPasscode: !!PASSCODE, authed: isAuthed(req), whisper: !!WHISPER_KEY, maxUploadMb: MAX_UPLOAD_MB });
+  res.json({ appName: APP_NAME, needsPasscode: !!PASSCODE, authed: isAuthed(req), whisper: !!WHISPER_KEY, maxUploadMb: MAX_UPLOAD_MB });
 });
 
 app.post('/api/login', (req, res) => {
@@ -391,7 +392,7 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Workspace running on http://localhost:${PORT}`);
+  console.log(`${APP_NAME} running on http://localhost:${PORT}`);
   console.log(`  data:     ${DATA_DIR}`);
   console.log(`  passcode: ${PASSCODE ? 'on' : 'off (set TEAM_PASSCODE to protect it)'}`);
   console.log(`  whisper:  ${WHISPER_KEY ? `${WHISPER_MODEL} via ${WHISPER_BASE}` : 'off (browser speech recognition only)'}`);

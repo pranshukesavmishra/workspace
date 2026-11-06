@@ -1,6 +1,6 @@
-# Team Workspace
+# Finlit Workspace
 
-One shared place where the team adds tasks (updates, fixes, new features) and the lead works through them, instead of a long shared doc that needs scrolling and red/yellow/green highlighting.
+One shared place where the Finlit team adds tasks (updates, fixes, new features) and the lead works through them, instead of a long shared doc that needs scrolling and red/yellow/green highlighting.
 
 - **Everyone adds tasks:** title, description, *where* to change it, links (Drive, Figma, …), screenshots, photos, files, and **voice notes that turn into text**.
 - **Every task gets a number** (`#1`, `#2`, …) so it's easy to talk about in meetings or say "do task 3 and 5".
@@ -64,7 +64,7 @@ The app is a single Node server. It stores its database and uploads in `DATA_DIR
 
 ## Configuration
 
-See [`.env.example`](.env.example): `PORT`, `TEAM_PASSCODE`, `DATA_DIR`, `MAX_UPLOAD_MB`, `WHISPER_API_KEY`, `WHISPER_BASE_URL`, `WHISPER_MODEL`.
+See [`.env.example`](.env.example): `APP_NAME`, `PORT`, `TEAM_PASSCODE`, `DATA_DIR`, `MAX_UPLOAD_MB`, `WHISPER_API_KEY`, `WHISPER_BASE_URL`, `WHISPER_MODEL`.
 
 ## Notes
 

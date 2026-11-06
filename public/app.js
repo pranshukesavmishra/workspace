@@ -70,7 +70,7 @@ const initials = (name = '?') => name.trim().split(/\s+/).map((w) => w[0]).slice
 
 // ---------------------------------------------------------------- state
 const S = {
-  config: { whisper: false, maxUploadMb: 25 },
+  config: { appName: 'Finlit Workspace', whisper: false, maxUploadMb: 25 },
   me: null,
   members: [],
   tasks: [],
@@ -232,7 +232,7 @@ function renderShell() {
   $('#app').innerHTML = `
     <header class="topbar">
       <div class="topbar-inner">
-        <div class="brand"><span class="brand-mark">${icon('logo', 16)}</span><span class="name">Team Workspace</span></div>
+        <div class="brand"><span class="brand-mark">${icon('logo', 16)}</span><span class="name">${esc(S.config.appName)}</span></div>
         <nav class="tabs" role="tablist">
           <button class="tab" data-view="board">${icon('board', 15)}Board</button>
           <button class="tab" data-view="timeline">${icon('calendar', 15)}<span>By date</span></button>
@@ -755,7 +755,7 @@ function showWho() {
   closeDrawer(); closeModal();
   const active = S.members.filter((m) => m.active);
   $('#app').innerHTML = `<div class="center-screen"><div class="card-panel">
-    <div class="brand"><span class="brand-mark">${icon('logo', 16)}</span>Team Workspace</div>
+    <div class="brand"><span class="brand-mark">${icon('logo', 16)}</span>${esc(S.config.appName)}</div>
     ${active.length
       ? `<h1>Who are you?</h1><p>Pick your name. This device will remember it.</p>
          <div class="who-list">${active.map((m) => `<button class="who" data-pick="${m.id}">${avatar(m, 'lg')}<b>${esc(m.name)}</b><span class="role">${m.role === 'lead' ? 'Lead' : ''}</span></button>`).join('')}</div>
@@ -784,7 +784,7 @@ async function setMe(id) {
 
 function showLogin() {
   $('#app').innerHTML = `<div class="center-screen"><form class="card-panel" id="login">
-    <div class="brand"><span class="brand-mark">${icon('logo', 16)}</span>Team Workspace</div>
+    <div class="brand"><span class="brand-mark">${icon('logo', 16)}</span>${esc(S.config.appName)}</div>
     <h1>Team passcode</h1><p>Ask your lead for the passcode.</p>
     <input class="input" type="password" name="passcode" autocomplete="current-password" required autofocus>
     <button class="btn primary" style="justify-content:center">Enter</button></form></div>`;
@@ -934,6 +934,7 @@ async function boot() {
   applyTheme();
   try {
     S.config = await (await fetch('/api/config')).json();
+    document.title = S.config.appName;
     if (S.config.needsPasscode && !S.config.authed) return showLogin();
     await loadMembers();
     const saved = ls.get('memberId');
