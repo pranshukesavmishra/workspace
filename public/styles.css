@@ -151,6 +151,18 @@ label.field .opt { color: var(--faint); font-weight: 400; }
 .avatar { width: 22px; height: 22px; border-radius: 50%; color: #fff; font-size: 10.5px; font-weight: 700; display: inline-grid; place-items: center; flex: none; }
 .avatar.lg { width: 30px; height: 30px; font-size: 12px; }
 
+/* ---------- date filter ---------- */
+.datebar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 20px 0; }
+.datebar-label { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--muted); margin-right: 2px; }
+.date-chip {
+  height: 30px; padding: 0 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); cursor: pointer; font-weight: 500; font-size: 13px;
+}
+.date-chip:hover { background: var(--surface-2); }
+.date-chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.date-pick { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-left: 6px; }
+.date-pick input.input { width: auto; min-height: 30px; padding: 3px 8px; font-size: 13px; }
+
 /* ---------- board ---------- */
 main { padding: 14px 20px 120px; }
 .board { display: grid; grid-template-columns: repeat(5, minmax(240px, 1fr)); gap: 14px; align-items: start; }
@@ -339,7 +351,8 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--border-strong)
   .brand span.name { display: none; }
   .tabs { margin-left: 0; }
   .tab .lbl-long { display: none; }
-  .toolbar, .summary { padding-left: 16px; padding-right: 16px; }
+  .toolbar, .summary, .datebar { padding-left: 16px; padding-right: 16px; }
+  .date-pick { margin-left: 0; }
   .toolbar .new-btn { display: none; }
   .search { max-width: none; flex-basis: 100%; }
   .toolbar select.input { flex: 1; min-width: 0; }

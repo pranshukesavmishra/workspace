@@ -76,7 +76,7 @@ const S = {
   tasks: [],
   version: -1,
   view: ls.get('view', 'board'),
-  filters: { q: '', member: '', type: '', status: '' },
+  filters: { q: '', member: '', type: '', status: '', preset: '', from: '', to: '' },
   selected: new Set(),
   openId: null,
   showAllVerified: false,
@@ -212,13 +212,28 @@ async function changeStatus(id, to) {
 }
 
 // ---------------------------------------------------------------- filtering
-function visibleTasks() {
+// The date range comes from the quick buttons (always worked out from "today", so it stays right after midnight) or the From / To pickers.
+function dateRange() {
+  const f = S.filters;
+  const day = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return ymd(d); };
+  if (f.preset === 'today') return [day(0), day(0)];
+  if (f.preset === 'yesterday') return [day(1), day(1)];
+  if (f.preset === 'week') return [day(6), day(0)];
+  if (f.preset === 'custom') return [f.from || '', f.to || ''];
+  return ['', ''];
+}
+// A task is "in" a date range if it belongs to a day in the range, or changes were requested on it on one of those days
+// (the same rule the "By date" view uses to list it under that day).
+function visibleTasks({ ignoreStatus = false } = {}) {
   const { q, member: m, type, status } = S.filters;
   const needle = q.trim().toLowerCase().replace(/^#/, '');
+  const [from, to] = dateRange();
+  const inRange = (d) => (!from || d >= from) && (!to || d <= to);
   return S.tasks.filter((t) => {
     if (m && String(t.created_by) !== m) return false;
     if (type && t.type !== type) return false;
-    if (status && t.status !== status) return false;
+    if (!ignoreStatus && status && t.status !== status) return false;
+    if ((from || to) && !inRange(t.task_date) && !t.updates.some((u) => u.kind === 'rework' && inRange(localDate(u.created_at)))) return false;
     if (needle) {
       const hay = `${t.id} ${t.title} ${t.description} ${t.area} ${t.links.join(' ')} ${t.updates.map((u) => u.body).join(' ')}`.toLowerCase();
       if (String(t.id) !== needle && !hay.includes(needle)) return false;
@@ -251,6 +266,15 @@ function renderShell() {
       <span class="spacer"></span>
       <button class="btn primary new-btn" data-act="new">${icon('plus', 15)}New task <kbd style="color:inherit;border-color:currentColor;opacity:.7">N</kbd></button>
     </div>
+    <div class="datebar" id="datebar">
+      <span class="datebar-label">${icon('calendar', 14)}Date</span>
+      <button class="date-chip" data-act="date-preset" data-preset="">All dates</button>
+      <button class="date-chip" data-act="date-preset" data-preset="today">Today</button>
+      <button class="date-chip" data-act="date-preset" data-preset="yesterday">Yesterday</button>
+      <button class="date-chip" data-act="date-preset" data-preset="week">Last 7 days</button>
+      <label class="date-pick">From <input class="input" type="date" id="d-from"></label>
+      <label class="date-pick">To <input class="input" type="date" id="d-to"></label>
+    </div>
     <div class="summary" id="summary"></div>
     <div id="banner"></div>
     <main id="main"></main>
@@ -261,6 +285,16 @@ function renderShell() {
   $('#q').addEventListener('input', (e) => { S.filters.q = e.target.value; render(); });
   $('#f-member').addEventListener('change', (e) => { S.filters.member = e.target.value; render(); });
   $('#f-type').addEventListener('change', (e) => { S.filters.type = e.target.value; render(); });
+  const pickDate = () => {
+    let from = $('#d-from').value, to = $('#d-to').value;
+    if (from && !to) to = from;            // only "From" picked: show just that day
+    if (from && to && to < from) to = from;
+    S.filters.from = from; S.filters.to = to;
+    S.filters.preset = from || to ? 'custom' : '';
+    render();
+  };
+  $('#d-from').addEventListener('change', pickDate);
+  $('#d-to').addEventListener('change', pickDate);
 }
 
 function render() {
@@ -274,8 +308,15 @@ function render() {
   fm.value = S.filters.member;
   $('#f-type').value = S.filters.type;
 
+  // date bar: highlight the active button, keep the pickers in sync (without rebuilding them while a calendar is open)
+  const [dFrom, dTo] = dateRange();
+  $$('#datebar .date-chip').forEach((b) => b.classList.toggle('on', b.dataset.preset === S.filters.preset));
+  if ($('#d-from').value !== dFrom) $('#d-from').value = dFrom;
+  if ($('#d-to').value !== dTo) $('#d-to').value = dTo;
+
   const all = S.tasks;
-  const count = (st) => all.filter((t) => t.status === st).length;
+  const inScope = visibleTasks({ ignoreStatus: true });   // counts follow the date / person / type / search filters
+  const count = (st) => inScope.filter((t) => t.status === st).length;
   $('#summary').innerHTML = STATUS_ORDER.map((st) => {
     const n = count(st);
     if (!n && st === 'reopened') return '';
@@ -902,6 +943,7 @@ document.addEventListener('click', async (e) => {
       return toast(`${list.length} task${list.length > 1 ? 's' : ''} copied`);
     }
     case 'clear-selected': S.selected.clear(); return render();
+    case 'date-preset': S.filters.preset = el.dataset.preset; S.filters.from = ''; S.filters.to = ''; return render();
     case 'filter-status': S.filters.status = S.filters.status === el.dataset.status ? '' : el.dataset.status; return render();
     case 'show-verified': S.showAllVerified = true; return render();
     case 'close-drawer': return closeDrawer();
