@@ -10,7 +10,7 @@ const ls = {
   set(k, v) { try { localStorage.setItem('ws.' + k, JSON.stringify(v)); } catch { /* private mode */ } },
 };
 
-const TYPE_LABEL = { bug: 'Bug fix', update: 'Update', feature: 'New feature', other: 'Other' };
+const TYPE_LABEL = { bug: 'Bug fix', ui: 'UI', update: 'Update', feature: 'New feature', other: 'Other' };
 const PRIORITY_LABEL = { low: 'Low', normal: 'Normal', high: 'High', urgent: 'Urgent' };
 const PRIORITY_RANK = { urgent: 3, high: 2, normal: 1, low: 0 };
 const STATUS_LABEL = {

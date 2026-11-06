@@ -36,7 +36,7 @@ if (remote && !fs.existsSync(DB_FILE)) {
 }
 const db = openDb(DB_FILE);
 
-const TYPES = ['bug', 'update', 'feature', 'other'];
+const TYPES = ['bug', 'ui', 'update', 'feature', 'other'];
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
 const TRANSITIONS = {
   todo:        ['in_progress', 'done'],
