@@ -45,6 +45,8 @@ curl -H "Authorization: Bearer $API_TOKEN" "https://workspace.finlitventures.com
 
 Without `ids` it returns all open tasks (needs changes, to do, in progress). Screenshots are downloaded the same way, with the same header.
 
+For Claude Code sessions there is a ready helper, [`tools/ws`](tools/ws) (`ws list`, `ws show 12`, `ws files 12`, `ws start 12`, `ws tick 12 "…"`, `ws note 12 "…"`, `ws done 12 "…"`), and step-by-step instructions in [`docs/claude-tasks.md`](docs/claude-tasks.md). In a cloud session, save the key as a **network secret** for `workspace.finlitventures.com` (header `Authorization`, `Bearer`), so it never appears in the chat.
+
 ## Voice → text
 
 Press **Speak**, talk, press **Stop**. The text goes into the description box, where you can fix it before saving. The audio recording is attached too, so nothing is lost if a word comes out wrong.
