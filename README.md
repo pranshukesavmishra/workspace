@@ -16,11 +16,34 @@ One shared place where the Finlit team adds tasks (updates, fixes, new features)
 | **Lead** | Open the **Board**. New tasks are on top in **To do**, urgent first, and anything sent back is in **Needs changes**. Click **Start** (turns yellow), then **Mark done** (turns green). Tick several tasks and use **Copy all** to hand them over in one go. |
 | **Team member** | Tasks waiting for a check show up in a green banner. Open one, then **Verify ✓** or **Request changes**, saying or typing what's still wrong. |
 
-There are two views:
-- **Board:** columns by status, best for working through tasks.
+There are three views:
+- **Board:** columns by status, best for working through tasks. On a computer you can **drag a card** to another column (only moves the workflow allows light up).
 - **By date:** the old doc layout (newest day on top) with colour bars instead of highlighting. Change requests appear under the day they were made.
+- **Report:** what happened today, yesterday, this week or on any day: verified, done, changes requested, started, new, overdue, and a per-person table. **Copy for WhatsApp** gives a ready-to-send summary for the group or the founder.
 
-Open a task to see everything about it: description, links, screenshot gallery, voice-note players, and the full history of who did what and when. You can also post follow-up updates there, with voice and attachments.
+Open a task to see everything about it: description, checklist, links, screenshot gallery, voice-note players, and the full history of who did what and when. You can also post follow-up updates there, with voice and attachments.
+
+### What else helps
+
+- **Never miss what's new:** cards someone else added or changed since you last opened them get a blue **New** / **Updated** label. The **New for you** filter shows only those. The 🔔 lists everything the team did, and both follow you across devices.
+- **Live:** changes appear instantly on everyone's screen (green dot in the top bar). Turn on **Desktop alerts** under your name to get a notification when the tab is in the background.
+- **Meeting mode** (`M`): type, paste or speak the list from a meeting, one task per line, and add them all at once. Indented lines become checklist points of the task above.
+- **Checklists:** split a task into points and tick them off. The card shows the progress (`2/5`).
+- **Due dates:** optional. Overdue tasks turn red, and the **Overdue** filter shows them.
+- **Mark up screenshots:** after attaching or pasting a screenshot, click **Mark up** to draw arrows, boxes, highlights or text showing exactly where the change goes. You can also mark up a copy of any image already on a task.
+- **Duplicate check:** while typing a new task, similar open tasks are shown, so the same bug isn't added twice.
+- **Image viewer:** click a screenshot to view it full-size. Use ← → to step through all images of the task.
+- **Install as an app:** on Android or desktop Chrome, use **Install as an app** under your name (or the browser menu). On iPhone, use Share → **Add to Home Screen**.
+
+### Using it with Claude
+
+Set `API_TOKEN` (any random text of 16+ characters) in the server's `.env`. A script or a Claude session can then read tasks, including image links:
+
+```bash
+curl -H "Authorization: Bearer $API_TOKEN" "https://workspace.finlitventures.com/api/export.md?ids=3,5"
+```
+
+Without `ids` it returns all open tasks (needs changes, to do, in progress). Screenshots are downloaded the same way, with the same header.
 
 ## Voice → text
 

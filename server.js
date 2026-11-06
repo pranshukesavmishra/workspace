@@ -19,6 +19,8 @@ const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 25);
 const WHISPER_KEY = process.env.WHISPER_API_KEY || process.env.OPENAI_API_KEY || '';
 const WHISPER_BASE = (process.env.WHISPER_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
 const WHISPER_MODEL = process.env.WHISPER_MODEL || 'whisper-1';
+// Optional key for scripts / Claude: "Authorization: Bearer <API_TOKEN>" works like the team passcode (min. 16 characters).
+const API_TOKEN = (process.env.API_TOKEN || '').length >= 16 ? process.env.API_TOKEN : '';
 const WHISPER_PROMPT = process.env.WHISPER_PROMPT ||
   'Team task update for a software project. May mix Hindi and English (Hinglish).';
 
@@ -60,7 +62,22 @@ function tx(fn) {
   try { const r = fn(); db.exec('COMMIT'); return r; }
   catch (e) { db.exec('ROLLBACK'); throw e; }
 }
-const bump = () => { db.prepare("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'version'").run(); scheduleBackup(); };
+const bump = () => { db.prepare("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'version'").run(); scheduleBackup(); scheduleBroadcast(); };
+
+// ---------- live updates (Server-Sent Events) ----------
+// Every open page keeps one connection; after any change it gets the new version number and reloads the data.
+const sseClients = new Set();
+let broadcastQueued = false;
+function scheduleBroadcast() {
+  if (broadcastQueued) return;
+  broadcastQueued = true;
+  setImmediate(() => {           // after the current transaction has committed
+    broadcastQueued = false;
+    const msg = `data: ${getVersion()}\n\n`;
+    for (const res of sseClients) res.write(msg);
+  });
+}
+setInterval(() => { for (const res of sseClients) res.write(': ping\n\n'); }, 25000).unref();
 
 // ---------- database backups ----------
 // A few seconds after every change: a consistent snapshot of the database. One copy per day is kept in
@@ -153,7 +170,12 @@ function cookies(header = '') {
     return [s.slice(0, i), decodeURIComponent(s.slice(i + 1))];
   }));
 }
+const safeEqual = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 function isAuthed(req) {
+  if (API_TOKEN) {
+    const h = req.get('authorization') || '';
+    if (h.startsWith('Bearer ') && safeEqual(h.slice(7).trim(), API_TOKEN)) return true;
+  }
   if (!PASSCODE) return true;
   const c = cookies(req.headers.cookie).ws_auth || '';
   return c.length === AUTH_TOKEN.length && crypto.timingSafeEqual(Buffer.from(c), Buffer.from(AUTH_TOKEN));
@@ -189,7 +211,9 @@ function shapeAttachment(a) {
 
 function loadTasks() {
   const tasks = db.prepare('SELECT * FROM tasks WHERE deleted = 0 ORDER BY id DESC').all();
-  const map = new Map(tasks.map((t) => [t.id, { ...t, links: JSON.parse(t.links || '[]'), attachments: [], updates: [] }]));
+  const map = new Map(tasks.map((t) => [t.id, {
+    ...t, links: JSON.parse(t.links || '[]'), checklist: JSON.parse(t.checklist || '[]'), attachments: [], updates: [],
+  }]));
   for (const a of db.prepare('SELECT * FROM attachments ORDER BY id').all()) map.get(a.task_id)?.attachments.push(shapeAttachment(a));
   for (const u of db.prepare('SELECT * FROM updates ORDER BY id').all()) map.get(u.task_id)?.updates.push({ ...u });
   return [...map.values()];
@@ -297,12 +321,53 @@ app.get('/api/stats', (req, res) => {
 
 app.get('/api/version',(req, res) => res.json({ version: getVersion() }));
 
-app.get('/api/tasks', (req, res) => res.json({ version: getVersion(), tasks: loadTasks() }));
+app.get('/api/tasks', (req, res) => {
+  // With x-member-id we also send what this person has already seen (for the "New" / "Updated" markers).
+  const me = Number(req.get('x-member-id')) ? db.prepare('SELECT * FROM members WHERE id = ?').get(Number(req.get('x-member-id'))) : null;
+  const seen = me ? Object.fromEntries(db.prepare('SELECT task_id, at FROM seen WHERE member_id = ?').all(me.id).map((r) => [r.task_id, r.at])) : {};
+  res.json({ version: getVersion(), tasks: loadTasks(), seen, feed_seen_at: me?.feed_seen_at || null });
+});
+
+app.get('/api/events', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',   // no-transform: proxies must not compress/buffer the stream
+    'X-Accel-Buffering': 'no',
+    Connection: 'keep-alive',
+  });
+  res.write(`retry: 5000\ndata: ${getVersion()}\n\n`);
+  sseClients.add(res);
+  req.on('close', () => sseClients.delete(res));
+});
+
+app.post('/api/seen', (req, res) => {
+  const me = actor(req);
+  const ts = now();
+  const up = db.prepare('INSERT INTO seen (member_id, task_id, at) VALUES (?, ?, ?) ON CONFLICT(member_id, task_id) DO UPDATE SET at = excluded.at');
+  tx(() => {
+    const ids = req.body?.all ? db.prepare('SELECT id FROM tasks WHERE deleted = 0').all().map((r) => r.id)
+      : (Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Boolean).slice(0, 2000) : []);
+    for (const id of ids) up.run(me.id, id, ts);
+    if (req.body?.all) db.prepare('UPDATE members SET feed_seen_at = ? WHERE id = ?').run(ts, me.id);
+  });
+  res.json({ ok: true, at: ts });
+});
+
+app.post('/api/feed-seen', (req, res) => {
+  const me = actor(req);
+  const ts = now();
+  db.prepare('UPDATE members SET feed_seen_at = ? WHERE id = ?').run(ts, me.id);
+  res.json({ ok: true, at: ts });
+});
 
 app.get('/api/tasks/:id', (req, res) => {
   getTask(req.params.id);
   res.json(loadTask(req.params.id));
 });
+
+const itemId = () => crypto.randomBytes(5).toString('hex');
+const newChecklist = (texts = []) => texts.map((t) => String(t).trim().slice(0, 300)).filter(Boolean).slice(0, 50)
+  .map((text) => ({ id: itemId(), text, done: false, done_by: null, done_at: null }));
 
 function taskFields(body, { partial }) {
   const out = {};
@@ -312,6 +377,12 @@ function taskFields(body, { partial }) {
   if (body.priority !== undefined) out.priority = PRIORITIES.includes(body.priority) ? body.priority : 'normal';
   if (body.task_date !== undefined) out.task_date = /^\d{4}-\d{2}-\d{2}$/.test(body.task_date) ? body.task_date : todayLocal();
   if (body.links !== undefined) out.links = JSON.stringify(cleanLinks(body.links));
+  if (body.due_date !== undefined) out.due_date = /^\d{4}-\d{2}-\d{2}$/.test(body.due_date) ? body.due_date : null;
+  if (body.checklist !== undefined) {
+    let items = body.checklist;
+    if (!Array.isArray(items)) { try { items = JSON.parse(items); } catch { items = String(items || '').split('\n'); } }
+    out.checklist = JSON.stringify(newChecklist(Array.isArray(items) ? items : []));
+  }
   if (!partial || out.title !== undefined) {
     if (!out.title && out.description) {
       // No title? Use the first line of the (possibly voice-typed) description.
@@ -324,6 +395,91 @@ function taskFields(body, { partial }) {
   return out;
 }
 
+function insertTask(f, memberId, ts) {
+  const r = db.prepare(`INSERT INTO tasks (title, description, type, priority, area, links, status, task_date, due_date, checklist, created_by, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)`)
+    .run(f.title, f.description || '', f.type || 'update', f.priority || 'normal', f.area || '', f.links || '[]',
+      f.task_date || todayLocal(), f.due_date || null, f.checklist || '[]', memberId, ts, ts);
+  const taskId = Number(r.lastInsertRowid);
+  db.prepare("INSERT INTO updates (task_id, author, kind, to_status, created_at) VALUES (?, ?, 'created', 'todo', ?)").run(taskId, memberId, ts);
+  db.prepare('INSERT OR REPLACE INTO seen (member_id, task_id, at) VALUES (?, ?, ?)').run(memberId, taskId, ts); // your own task isn't "new" for you
+  return taskId;
+}
+
+// Meeting mode: many tasks at once (shared type / priority / dates), each with optional checklist items.
+app.post('/api/tasks/bulk', (req, res) => {
+  const me = actor(req);
+  const items = Array.isArray(req.body?.items) ? req.body.items.slice(0, 100) : [];
+  if (!items.length) throw new HttpError(400, 'Nothing to add');
+  const shared = taskFields({ ...req.body, title: 'x' }, { partial: true });
+  delete shared.title;
+  const ts = now();
+  const ids = tx(() => {
+    const out = items.map((it) => {
+      const f = { ...shared, ...taskFields({ title: it.title, description: it.description || '', checklist: it.checklist || [] }, { partial: false }) };
+      return insertTask(f, me.id, ts);
+    });
+    bump();
+    return out;
+  });
+  res.json({ ids });
+});
+
+app.post('/api/tasks/:id/checklist', (req, res) => {
+  const me = actor(req);
+  const t = getTask(req.params.id);
+  const list = JSON.parse(t.checklist || '[]');
+  const { op, item, text } = req.body || {};
+  const i = list.findIndex((x) => x.id === item);
+  if (op === 'add') {
+    const added = newChecklist(String(text || '').split('\n'));
+    if (!added.length) throw new HttpError(400, 'Write the point first');
+    if (list.length + added.length > 50) throw new HttpError(400, 'A task can have at most 50 points');
+    list.push(...added);
+  } else {
+    if (i < 0) throw new HttpError(404, 'That point no longer exists');
+    if (op === 'toggle') Object.assign(list[i], list[i].done ? { done: false, done_by: null, done_at: null } : { done: true, done_by: me.id, done_at: now() });
+    else if (op === 'edit') { const v = String(text || '').trim().slice(0, 300); if (!v) throw new HttpError(400, 'Empty point'); list[i].text = v; }
+    else if (op === 'remove') list.splice(i, 1);
+    else throw new HttpError(400, 'Unknown action');
+  }
+  db.prepare('UPDATE tasks SET checklist = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(list), now(), t.id);
+  bump();
+  res.json(loadTask(t.id));
+});
+
+// Plain-text (Markdown) export, e.g. for Claude:  GET /api/export.md?ids=3,5   or   ?status=todo,reopened
+app.get('/api/export.md', (req, res) => {
+  const base = `${req.protocol}://${req.get('host')}`;
+  const ids = String(req.query.ids || '').split(',').map(Number).filter(Boolean);
+  const statuses = String(req.query.status || (ids.length ? '' : 'reopened,todo,in_progress')).split(',').filter(Boolean);
+  const members = Object.fromEntries(db.prepare('SELECT id, name FROM members').all().map((m) => [m.id, m.name]));
+  const tasks = loadTasks().filter((t) => (ids.length ? ids.includes(t.id) : true) && (statuses.length ? statuses.includes(t.status) : true))
+    .sort((a, b) => a.id - b.id);
+  const out = [];
+  for (const t of tasks) {
+    out.push(`## Task #${t.id}: ${t.title}`, '');
+    out.push(`- Type: ${t.type} · Priority: ${t.priority} · Status: ${t.status}`);
+    out.push(`- Added by ${members[t.created_by] || '?'} on ${t.task_date}${t.due_date ? ` · Due ${t.due_date}` : ''}`);
+    if (t.area) out.push(`- Where: ${t.area}`);
+    if (t.description) out.push('', t.description);
+    if (t.checklist.length) out.push('', 'Checklist:', ...t.checklist.map((c) => `- [${c.done ? 'x' : ' '}] ${c.text}`));
+    if (t.links.length) out.push('', 'Links:', ...t.links.map((l) => `- ${l}`));
+    const files = t.attachments.filter((a) => !a.update_id);
+    if (files.length) out.push('', 'Attachments:', ...files.map((a) => `- ${a.kind}: ${a.name} ${base}${a.url}`));
+    const notes = t.updates.filter((u) => (u.kind === 'comment' || u.kind === 'rework') && (u.body || t.attachments.some((a) => a.update_id === u.id)));
+    if (notes.length) {
+      out.push('', 'Updates:');
+      for (const u of notes) {
+        out.push(`- ${u.created_at.slice(0, 10)} ${members[u.author] || '?'}${u.kind === 'rework' ? ' (CHANGES REQUESTED)' : ''}: ${u.body || ''}`);
+        for (const a of t.attachments.filter((x) => x.update_id === u.id)) out.push(`  - ${a.kind}: ${a.name} ${base}${a.url}`);
+      }
+    }
+    out.push('', '---', '');
+  }
+  res.type('text/markdown; charset=utf-8').send(out.join('\n') || 'No matching tasks.\n');
+});
+
 app.post('/api/tasks', upload.array('files', 20), async (req, res) => {
   try {
     const me = actor(req);
@@ -331,12 +487,7 @@ app.post('/api/tasks', upload.array('files', 20), async (req, res) => {
     await persistUploads(req.files);
     const ts = now();
     const id = tx(() => {
-      const r = db.prepare(`INSERT INTO tasks (title, description, type, priority, area, links, status, task_date, created_by, created_at, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)`)
-        .run(f.title, f.description || '', f.type || 'update', f.priority || 'normal', f.area || '', f.links || '[]',
-          f.task_date || todayLocal(), me.id, ts, ts);
-      const taskId = Number(r.lastInsertRowid);
-      db.prepare("INSERT INTO updates (task_id, author, kind, to_status, created_at) VALUES (?, ?, 'created', 'todo', ?)").run(taskId, me.id, ts);
+      const taskId = insertTask(f, me.id, ts);
       saveAttachments(req.files, taskId, null, me.id);
       bump();
       return taskId;
@@ -474,5 +625,6 @@ app.listen(PORT, () => {
   console.log(`  data:     ${DATA_DIR}`);
   console.log(`  passcode: ${PASSCODE ? 'on' : 'off (set TEAM_PASSCODE to protect it)'}`);
   console.log(`  storage:  ${remote ? remote.describe + ' (files + database backups)' : 'local disk only'}`);
+  console.log(`  api key:  ${API_TOKEN ? 'on (Authorization: Bearer …)' : 'off'}`);
   console.log(`  whisper:  ${WHISPER_KEY ? `${WHISPER_MODEL} via ${WHISPER_BASE}` : 'off (browser speech recognition only)'}`);
 });

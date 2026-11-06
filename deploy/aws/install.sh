@@ -49,6 +49,8 @@ if [ ! -f "$WS_HOME/.env" ]; then
 APP_NAME=Finlit Workspace
 TEAM_PASSCODE=$PASS
 MAX_UPLOAD_MB=25
+# Optional: key for scripts / Claude to read tasks (16+ random characters)
+# API_TOKEN=
 # Optional: better voice-to-text (see .env.example in the repo)
 # WHISPER_API_KEY=
 # Optional: off-server copies in an S3 bucket (see .env.example)

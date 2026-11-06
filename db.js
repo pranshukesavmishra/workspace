@@ -64,6 +64,23 @@ export function openDb(file) {
 
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
     INSERT OR IGNORE INTO meta (key, value) VALUES ('version', '1');
+
+    -- What each person has already looked at (drives "New" / "Updated" markers and the activity bell)
+    CREATE TABLE IF NOT EXISTS seen (
+      member_id  INTEGER NOT NULL,
+      task_id    INTEGER NOT NULL,
+      at         TEXT NOT NULL,
+      PRIMARY KEY (member_id, task_id)
+    );
   `);
+
+  // Columns added after the first release: add them to existing databases without touching the data.
+  const addColumn = (table, column, ddl) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+  addColumn('tasks', 'due_date', 'due_date TEXT');                                  // YYYY-MM-DD or NULL
+  addColumn('tasks', 'checklist', "checklist TEXT NOT NULL DEFAULT '[]'");          // JSON [{id, text, done, done_by, done_at}]
+  addColumn('members', 'feed_seen_at', 'feed_seen_at TEXT');                        // last time the activity bell was opened
   return db;
 }
