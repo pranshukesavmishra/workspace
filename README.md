@@ -50,10 +50,10 @@ Open http://localhost:3000. The **first person to join becomes the lead**. Every
 The workspace runs as **one extra small container on the same EC2 server as Finlit** (about 60 MB of memory). That means no new hosting account and no subscription. Files stay on the server's disk.
 
 - Finlit's Caddy (already on ports 80/443) serves it over **https** at its own address, e.g. `https://workspace.finlitventures.com`. Without a domain it uses a free `workspace.<server-ip>.sslip.io` address.
-- Finlit itself is untouched apart from a two-line, one-time change in its repository: Caddy loads extra site files from `/opt/finlit/caddy-extra/`. With no files there it does nothing.
+- Finlit itself only needed a small one-time change (already applied in its repository): its Caddy loads extra site files from `/opt/finlit/caddy-extra/`. With no files there it does nothing.
 - After install, the server checks this repo every 5 minutes and redeploys on its own when `main` changes (same idea as Finlit's auto-deploy).
 
-**One-time install**, after the Finlit change is deployed. On the server, as `ubuntu`:
+**One-time install** (already done on the Finlit server). On the server, as `ubuntu`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pranshukesavmishra/workspace/main/deploy/aws/install.sh | WORKSPACE_DOMAIN=workspace.finlitventures.com bash
